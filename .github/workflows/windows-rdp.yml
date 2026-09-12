@@ -15,7 +15,7 @@ jobs:
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -Value 0
 
           # 关闭 NLA（网络级别身份验证）
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "UserAuthentication" -Value 0
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "UserAuthentication" -Value 0 -Type DWord
 
           # 安全层走最兼容模式（不走 TLS）
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "SecurityLayer" -Value 0 -Type DWord
@@ -33,7 +33,17 @@ jobs:
           Start-Service TermService
           Start-Sleep -Seconds 3
 
-          # 诊断输出
+          # 诊断：确认注册表值已生效
+          Write-Host "===== 注册表验证 ====="
+          Write-Host "fDenyTSConnections:"
+          Get-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections"
+          Write-Host "UserAuthentication:"
+          Get-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication"
+          Write-Host "SecurityLayer:"
+          Get-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "SecurityLayer"
+          Write-Host "AllowEncryptionOracle:"
+          Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\CredSSP\Parameters' -Name "AllowEncryptionOracle"
+
           Write-Host "===== qwinsta ====="
           qwinsta
           Write-Host "===== 3389 监听状态 ====="
@@ -59,10 +69,10 @@ jobs:
           # 读取配置
           $cfg = Get-Content C:\secpol.cfg
 
-          # 构造新的授权行（显式拼接 SID）
+          # 构造新的授权行
           $newRight = "SeRemoteInteractiveLogonRight = *S-1-5-32-544,*S-1-5-32-555,$sid"
 
-          # 找到原行并替换
+          # 逐行替换
           $cfg = $cfg | ForEach-Object {
               if ($_ -match "^SeRemoteInteractiveLogonRight") {
                   $newRight
@@ -80,8 +90,8 @@ jobs:
               }
           }
 
-          # 写回配置
-          $cfg | Set-Content C:\secpol.cfg
+          # 关键：用 Unicode 写回，secedit 才认
+          $cfg | Out-File -FilePath C:\secpol.cfg -Encoding Unicode
 
           # 应用策略
           secedit /configure /db C:\windows\security\local.sdb /cfg C:\secpol.cfg /areas SECURITYPOLICY
