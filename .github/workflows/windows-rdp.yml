@@ -59,11 +59,26 @@ jobs:
           # 读取配置
           $cfg = Get-Content C:\secpol.cfg
 
-          # 移除旧的授权行，重新写入：允许 Administrators + Remote Desktop Users + NvdAdmin
-          $cfg = $cfg -replace "SeRemoteInteractiveLogonRight.*", "SeRemoteInteractiveLogonRight = *S-1-5-32-544,*S-1-5-32-555,$sid"
+          # 构造新的授权行（显式拼接 SID）
+          $newRight = "SeRemoteInteractiveLogonRight = *S-1-5-32-544,*S-1-5-32-555,$sid"
+
+          # 找到原行并替换
+          $cfg = $cfg | ForEach-Object {
+              if ($_ -match "^SeRemoteInteractiveLogonRight") {
+                  $newRight
+              } else {
+                  $_
+              }
+          }
 
           # 拒绝列表只保留 Guests
-          $cfg = $cfg -replace "SeDenyRemoteInteractiveLogonRight.*", "SeDenyRemoteInteractiveLogonRight = *S-1-5-32-546"
+          $cfg = $cfg | ForEach-Object {
+              if ($_ -match "^SeDenyRemoteInteractiveLogonRight") {
+                  "SeDenyRemoteInteractiveLogonRight = *S-1-5-32-546"
+              } else {
+                  $_
+              }
+          }
 
           # 写回配置
           $cfg | Set-Content C:\secpol.cfg
@@ -76,6 +91,10 @@ jobs:
           secedit /export /cfg C:\secpol_check.cfg
           Get-Content C:\secpol_check.cfg | Select-String "SeRemoteInteractiveLogonRight"
           Get-Content C:\secpol_check.cfg | Select-String "SeDenyRemoteInteractiveLogonRight"
+
+          # 额外诊断：确认 NvdAdmin 的组归属
+          Write-Host "===== NvdAdmin 组归属 ====="
+          net user NvdAdmin
 
       - name: 4. Install & Connect Tailscale VPN
         env:
