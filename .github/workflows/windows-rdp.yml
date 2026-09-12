@@ -14,8 +14,15 @@ jobs:
           # 开启远程桌面
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -Value 0
 
-          # 关闭 NLA（网络级别身份验证），避免安卓客户端 0x204
+          # 关闭 NLA（网络级别身份验证）
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "UserAuthentication" -Value 0
+
+          # 安全层走最兼容模式（不走 TLS）
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "SecurityLayer" -Value 0 -Type DWord
+
+          # 放宽 CredSSP 加密Oracle，兼容旧客户端
+          New-Item -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\CredSSP\Parameters' -Force | Out-Null
+          Set-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\CredSSP\Parameters' -Name "AllowEncryptionOracle" -Value 2 -Type DWord
 
           # 强制防火墙放行远程桌面（所有网络配置文件）
           Set-NetFirewallRule -DisplayGroup "Remote Desktop" -Enabled True -Profile Any
@@ -37,14 +44,38 @@ jobs:
           $Password = ConvertTo-SecureString "P@ssw0rd1qazXSW@#" -AsPlainText -Force
           New-LocalUser -Name "NvdAdmin" -Password $Password -PasswordNeverExpires -ErrorAction SilentlyContinue
           Add-LocalGroupMember -Group "Administrators" -Member "NvdAdmin" -ErrorAction SilentlyContinue
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "NvdAdmin" -ErrorAction SilentlyContinue
           net user runneradmin P@ssw0rd1qazXSW@#
 
-      - name: 3. Allow Admin RDP Logon
+      - name: 3. Grant RDP Logon Rights to NvdAdmin
         run: |
-          # 移除“拒绝本地管理员通过远程桌面登录”策略（Server 2025 默认可能启用）
+          # 获取 NvdAdmin 的 SID
+          $sid = (Get-LocalUser -Name "NvdAdmin").SID.Value
+          Write-Host "NvdAdmin SID: $sid"
+
+          # 导出当前安全策略
           secedit /export /cfg C:\secpol.cfg
-          (Get-Content C:\secpol.cfg) -replace "SeDenyRemoteInteractiveLogonRight.*", "" | Set-Content C:\secpol.cfg
+
+          # 读取配置
+          $cfg = Get-Content C:\secpol.cfg
+
+          # 移除旧的授权行，重新写入：允许 Administrators + Remote Desktop Users + NvdAdmin
+          $cfg = $cfg -replace "SeRemoteInteractiveLogonRight.*", "SeRemoteInteractiveLogonRight = *S-1-5-32-544,*S-1-5-32-555,$sid"
+
+          # 拒绝列表只保留 Guests
+          $cfg = $cfg -replace "SeDenyRemoteInteractiveLogonRight.*", "SeDenyRemoteInteractiveLogonRight = *S-1-5-32-546"
+
+          # 写回配置
+          $cfg | Set-Content C:\secpol.cfg
+
+          # 应用策略
           secedit /configure /db C:\windows\security\local.sdb /cfg C:\secpol.cfg /areas SECURITYPOLICY
+
+          # 诊断：确认策略已写入
+          Write-Host "===== 当前 RDP 登录权限 ====="
+          secedit /export /cfg C:\secpol_check.cfg
+          Get-Content C:\secpol_check.cfg | Select-String "SeRemoteInteractiveLogonRight"
+          Get-Content C:\secpol_check.cfg | Select-String "SeDenyRemoteInteractiveLogonRight"
 
       - name: 4. Install & Connect Tailscale VPN
         env:
