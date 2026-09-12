@@ -11,9 +11,26 @@ jobs:
     steps:
       - name: 1. Enable Remote Desktop & Firewall
         run: |
+          # 开启远程桌面
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -Value 0
-          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+
+          # 关闭 NLA（网络级别身份验证），避免安卓客户端 0x204
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "UserAuthentication" -Value 0
+
+          # 强制防火墙放行远程桌面（所有网络配置文件）
+          Set-NetFirewallRule -DisplayGroup "Remote Desktop" -Enabled True -Profile Any
+
+          # 关键：重启远程桌面服务，让注册表修改生效
+          Stop-Service TermService -Force -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 3
+          Start-Service TermService
+          Start-Sleep -Seconds 3
+
+          # 诊断输出
+          Write-Host "===== qwinsta ====="
+          qwinsta
+          Write-Host "===== 3389 监听状态 ====="
+          netstat -ano | findstr :3389
 
       - name: 2. Create Admin Account
         run: |
@@ -22,22 +39,33 @@ jobs:
           Add-LocalGroupMember -Group "Administrators" -Member "NvdAdmin" -ErrorAction SilentlyContinue
           net user runneradmin P@ssw0rd1qazXSW@#
 
-      - name: 3. Install & Connect Tailscale VPN
+      - name: 3. Allow Admin RDP Logon
+        run: |
+          # 移除“拒绝本地管理员通过远程桌面登录”策略（Server 2025 默认可能启用）
+          secedit /export /cfg C:\secpol.cfg
+          (Get-Content C:\secpol.cfg) -replace "SeDenyRemoteInteractiveLogonRight.*", "" | Set-Content C:\secpol.cfg
+          secedit /configure /db C:\windows\security\local.sdb /cfg C:\secpol.cfg /areas SECURITYPOLICY
+
+      - name: 4. Install & Connect Tailscale VPN
         env:
           TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
         run: |
-          # Download and install Tailscale silently
+          # 下载并静默安装 Tailscale
           Invoke-WebRequest "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi" -OutFile "C:\tailscale.msi"
           Start-Process msiexec -ArgumentList "/i C:\tailscale.msi /quiet /norestart" -Wait
 
-          # Connect to Tailscale network
+          # 连接 Tailscale
           Start-Sleep -Seconds 5
           & "C:\Program Files\Tailscale\tailscale.exe" up --authkey="$Env:TAILSCALE_AUTHKEY" --hostname="github-rdp-server"
 
           Start-Sleep -Seconds 8
 
-          # Get Tailscale IP
+          # 获取 Tailscale IP
           $ts_ip = & "C:\Program Files\Tailscale\tailscale.exe" ip -4
+
+          # 再次确认 RDP 监听
+          Write-Host "===== RDP 监听确认 ====="
+          netstat -ano | findstr :3389
 
           Write-Host ""
           Write-Host "==========================================" -ForegroundColor Green
@@ -48,7 +76,7 @@ jobs:
           Write-Host "  >> Open mstsc and connect to: $ts_ip" -ForegroundColor Magenta
           Write-Host "==========================================" -ForegroundColor Green
 
-      - name: 4. Keep Server Alive (48 Hours)
+      - name: 5. Keep Server Alive (48 Hours)
         run: |
           for ($i = 1; $i -le 2880; $i++) {
               Start-Sleep -Seconds 60
